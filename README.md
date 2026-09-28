@@ -185,7 +185,7 @@ Evaluation can also be performed separately for different seasons and surface re
 The overall workflow of the repository is illustrated below:
 
 <p align="center">
-  <img src="docs/IMG2.png" alt="Workflow Diagram" width="300">
+  <img src="FIG1.png" alt="Workflow Diagram" width="300">
 </p>
 
 The workflow can be summarized as:
