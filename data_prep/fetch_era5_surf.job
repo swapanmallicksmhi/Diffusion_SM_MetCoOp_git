@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+#SBATCH --output=MetCOOP_era5surf.out
+#SBATCH --error=MetCOOP_era5surf.out
+#SBATCH --job-name=MetCOOP_erasurf_data
+#SBATCH --qos=nf
+#SBATCH --time=48:00:00
+module load conda
+mamba activate /perm/swe4281/conda/envs/climate
+#
+python3 fetch_err5_surf.py
+exit

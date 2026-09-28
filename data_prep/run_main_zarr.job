@@ -1,0 +1,30 @@
+#!/bin/bash
+#-------------------------------
+#SBATCH --job-name=zarr_convert
+#SBATCH --output=zarr_conv.out
+#SBATCH --error=zarr_conv.out
+#SBATCH --nodes=1
+#SBATCH --mem=60GB
+#SBATCH --time=36:00:00
+#-------------------------------
+
+set -evx
+
+module load conda
+conda activate /perm/swe4281/conda/envs/mamba-env
+
+# Paths
+era5dir="/lus/h2resw01/scratch/swe4281/CERRA_DATA2026/ERA5EDA_DATA/SURF_METCOOP"
+outputdir="/lus/h2resw01/scratch/swe4281/CERRA_DATA2026/ERA5EDA_DATA/SURF_METCOOP/ZARR/PLOTS"
+zarrpath="/lus/h2resw01/scratch/swe4281/CERRA_DATA2026/ERA5EDA_DATA/SURF_METCOOP/ZARR/Metcoop_era5land2016_2020.zarr"
+
+mkdir -p ${outputdir}
+rm -rf ${zarrpath}
+mkdir -p ${zarrpath}
+
+# Run script
+python3 main_zarr.py \
+    --grid_size 256 \
+    --era5land_dir ${era5dir} \
+    --output_dir ${outputdir} \
+    --zarr_path ${zarrpath}

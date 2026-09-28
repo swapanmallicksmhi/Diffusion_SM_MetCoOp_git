@@ -1,0 +1,428 @@
+#!/bin/bash -l
+#-------------------------------
+#SBATCH --job-name=evaluation
+#SBATCH --output=Evaluation_Jan_%j.out
+#SBATCH --error=Evaluation_Jan_%j.out
+#SBATCH --qos=ng
+#SBATCH --nodes=1
+#SBATCH --mem=80GB
+#SBATCH --gpus=1
+#SBATCH --time=48:00:00
+###-------------------------------
+
+set -evx
+module load conda
+conda activate /perm/swe4281/conda/envs/torch-env
+
+PROJECT_ROOT="$(cd .. && pwd)"
+#
+SDE_OBJ="epsilon" #SDE_OBJ="score_snr" or "epsilon"
+# Forecast lead time
+FORECAST_LEAD_HOURS=24
+RAIN_BEFORE="24hr"   # Options: "24hr" or "48hr"
+EXP="SDM_ONLY_SRunoff"
+TYPE=${EXP}_${RAIN_BEFORE}
+
+INPUT_VARS=(sro, ssro
+  d2m
+  skt
+  slhf
+  sshf
+  tp
+)
+
+#  t2m
+#  d2m
+#  skt
+#  slhf
+#  sshf
+#  u10
+#  v10
+#  e
+#  pev
+#  sp
+#  tp
+#  ssr
+#  lai_lv
+#  lai_hv
+#)
+
+TARGET_VARS=(
+  swvl1
+  stl1
+)
+#sro
+#ssro
+
+# ----------------------------------------------------------
+# Seasonal conditioning
+# ----------------------------------------------------------
+USE_SEASONAL=1
+SEASONAL_CHANNELS=12
+
+SEASONAL_FLAGS=""
+if [ "${USE_SEASONAL}" = "1" ]; then
+  SEASONAL_FLAGS="--add_seasonal_cond --seasonal_channels ${SEASONAL_CHANNELS}"
+fi
+
+# ----------------------------------------------------------
+# Forecast lead time
+# ----------------------------------------------------------
+FORECAST_LEAD_HOURS=24
+SDE_OBJ="epsilon"    # SDE_OBJ="score_snr" or "epsilon"
+RAIN_BEFORE="24hr"   # Options: "24hr" or "48hr"
+
+#
+cd ${PROJECT_ROOT}
+
+# ----------------------------------------------------------
+# SDE configuration
+# ----------------------------------------------------------
+SDE_OBJ="epsilon"
+# SDE_OBJ="score_snr" or "epsilon"
+
+cd src_diffusion
+
+# ----------------------------------------------------------
+# Rainfall input configuration
+# ----------------------------------------------------------
+
+rm -f zarr_load.py
+
+if [[ "${RAIN_BEFORE}" == "24hr" ]]; then
+
+    ln -sf zarr_load_tp24h.py zarr_load.py
+
+elif [[ "${RAIN_BEFORE}" == "48hr" ]]; then
+
+    ln -sf zarr_load_tp48h.py zarr_load.py
+
+else
+
+    echo "ERROR: Invalid RAIN_BEFORE=${RAIN_BEFORE}"
+    echo "Valid options are: 24hr or 48hr"
+    exit 1
+
+fi
+
+echo "RAIN_BEFORE = ${RAIN_BEFORE}"
+echo "Using: $(readlink zarr_load.py)"
+
+# ----------------------------------------------------------
+# Diffusion SDE configuration
+# ----------------------------------------------------------
+
+rm -f diffusion_sde.py
+
+if [ "${SDE_OBJ}" = "epsilon" ]; then
+
+    ln -sf diffusion_sde_epsilon.py diffusion_sde.py
+
+elif [ "${SDE_OBJ}" = "score_snr" ]; then
+
+    ln -sf diffusion_sde_score_snr.py diffusion_sde.py
+
+else
+
+    echo "Unknown SDE_OBJ: ${SDE_OBJ}"
+    exit 1
+
+fi
+
+rm -rf __pycache__
+
+cd ..
+
+rm -rf __pycache__
+
+ZARR_PATH="PATH/era5land2010_2020.zarr"
+SHAPEFILE=""
+
+# ----------------------------------------------------------
+# Checkpoint directory
+# ----------------------------------------------------------
+
+CHECKPOINT_DIR="PATH/MODEL/${TYPE}"
+
+# ----------------------------------------------------------
+# Initialization configuration
+# ----------------------------------------------------------
+
+SELECTED_HOUR=06
+MONTHN="JAN"
+
+# ----------------------------------------------------------
+# Checkpoints to evaluate
+# ----------------------------------------------------------
+
+CHECKPOINT_FILES="
+ema_058000.pt
+ema_060000.pt
+ema_062000.pt
+ema_064000.pt
+ema_066000.pt
+ema_068000.pt
+ema_070000.pt
+"
+
+# ----------------------------------------------------------
+# Model architecture
+#
+# MUST MATCH TRAINING
+# ----------------------------------------------------------
+
+IMAGE_SIZE=352
+NUM_CHANNELS=64
+NUM_RES_BLOCKS=2
+NUM_HEADS=4
+ATTENTION_RESOLUTIONS="16,8"
+DROPOUT=0.0
+LEARN_SIGMA=""
+CLASS_COND=""
+NOISE_SCHEDULE="linear"
+USE_SCALE_SHIFT_NORM="--use_scale_shift_norm"
+
+# ----------------------------------------------------------
+# SDE loss
+# ----------------------------------------------------------
+
+if [ "${SDE_OBJ}" = "epsilon" ]; then
+
+    SDE_FLAGS="--sde_loss_type score_mse"
+
+elif [ "${SDE_OBJ}" = "score_snr" ]; then
+
+    SDE_FLAGS="--sde_loss_type snr_weighted"
+
+fi
+
+# ----------------------------------------------------------
+# Generation parameters
+# ----------------------------------------------------------
+
+NUM_SAMPLES=10
+DIFFUSION_STEPS=4000
+TIMESTEP_RESPACING=""
+
+# ----------------------------------------------------------
+# Plot domain
+# ----------------------------------------------------------
+LON_MIN=4
+LON_MAX=25
+LAT_MIN=54
+LAT_MAX=71
+
+# ----------------------------------------------------------
+# Check shapefile
+# ----------------------------------------------------------
+
+if [ ! -f "${SHAPEFILE}" ]; then
+
+    echo "ERROR: Shapefile not found:"
+    echo "${SHAPEFILE}"
+    exit 1
+
+fi
+
+# ----------------------------------------------------------
+# GPU
+#
+# All days are processed sequentially on this single GPU
+# ----------------------------------------------------------
+
+export CUDA_VISIBLE_DEVICES=0
+
+# ==========================================================
+# DAY LOOP
+#
+# June 2019: day 01 through day 30
+# ==========================================================
+
+for DAY in $(seq -w 01 01); do
+#for DAY in $(seq -w 01 30); do
+
+# ----------------------------------------------------------
+# Date
+# ----------------------------------------------------------
+
+BASE_DATE="2019-01-${DAY}"
+
+DATE_TAG="${BASE_DATE//-/}"
+
+COND_DATETIME="${BASE_DATE} ${SELECTED_HOUR}:00:00"
+
+# ----------------------------------------------------------
+# Output directory
+# ----------------------------------------------------------
+
+BASE_OUTPUT="PATH/MODEL/${TYPE}/${MONTHN}/INIT_${SELECTED_HOUR}UTC/${DATE_TAG}"
+echo "${BASE_OUTPUT}"
+mkdir -p "${BASE_OUTPUT}"
+
+# ----------------------------------------------------------
+# Summary file
+# ----------------------------------------------------------
+
+SUMMARY_FILE="checkpoint_summary_${DATE_TAG}_utc${SELECTED_HOUR}_lead${FORECAST_LEAD_HOURS}h.txt"
+
+# ----------------------------------------------------------
+# Print configuration
+# ----------------------------------------------------------
+
+echo "============================================================"
+echo "DIFFUSION +24-HOUR FORECAST EVALUATION"
+echo "============================================================"
+echo "Day                     : ${DAY}"
+echo "Initialization datetime : ${COND_DATETIME}"
+echo "Forecast lead hours     : ${FORECAST_LEAD_HOURS}"
+echo "Input Zarr              : ${ZARR_PATH}"
+echo "Boundary shapefile      : ${SHAPEFILE}"
+echo "Checkpoint directory    : ${CHECKPOINT_DIR}"
+echo "Output directory        : ${BASE_OUTPUT}"
+echo "Number of samples       : ${NUM_SAMPLES}"
+echo "Image size              : ${IMAGE_SIZE}"
+echo "Physical input channels : ${#INPUT_VARS[@]}"
+echo "Seasonal channels       : ${SEASONAL_CHANNELS}"
+echo "Total cond channels     : $((${#INPUT_VARS[@]} + ${SEASONAL_CHANNELS}))"
+echo "Target channels         : ${#TARGET_VARS[@]}"
+echo "Target variables        : ${TARGET_VARS[@]}"
+echo "GPU                     : ${CUDA_VISIBLE_DEVICES}"
+echo "============================================================"
+
+# ----------------------------------------------------------
+# Create temporary checkpoint list
+# ----------------------------------------------------------
+
+TEMP_CHECKPOINT_LIST="${BASE_OUTPUT}/checkpoint_list.txt"
+
+: > "${TEMP_CHECKPOINT_LIST}"
+
+FOUND_CKPTS=0
+
+for ckpt in ${CHECKPOINT_FILES}; do
+
+  if [ -f "${CHECKPOINT_DIR}/${ckpt}" ]; then
+
+    echo "${CHECKPOINT_DIR}/${ckpt}" >> "${TEMP_CHECKPOINT_LIST}"
+
+    FOUND_CKPTS=$((FOUND_CKPTS + 1))
+
+  else
+
+    echo "WARNING: checkpoint not found: ${CHECKPOINT_DIR}/${ckpt}"
+
+  fi
+
+done
+
+# ----------------------------------------------------------
+# Check checkpoints
+# ----------------------------------------------------------
+
+if [ "${FOUND_CKPTS}" -eq 0 ]; then
+
+  echo "ERROR: no checkpoints found."
+  exit 1
+
+fi
+
+echo "Found ${FOUND_CKPTS} checkpoints for evaluation."
+
+cat "${TEMP_CHECKPOINT_LIST}"
+
+# ----------------------------------------------------------
+# Launch evaluation
+# ----------------------------------------------------------
+
+python3 -u train_ml/evaluation_main_tp${RAIN_BEFORE}.py \
+  --checkpoint_list "${TEMP_CHECKPOINT_LIST}" \
+  --zarr_path "${ZARR_PATH}" \
+  --shapefile "${SHAPEFILE}" \
+  --output_dir "${BASE_OUTPUT}" \
+  --num_samples ${NUM_SAMPLES} \
+  --image_size ${IMAGE_SIZE} \
+  --input_vars "${INPUT_VARS[@]}" \
+  --target_vars "${TARGET_VARS[@]}" \
+  ${SEASONAL_FLAGS} \
+  ${SDE_FLAGS} \
+  --forecast_lead_hours ${FORECAST_LEAD_HOURS} \
+  --num_channels ${NUM_CHANNELS} \
+  --num_res_blocks ${NUM_RES_BLOCKS} \
+  --num_heads ${NUM_HEADS} \
+  --attention_resolutions "${ATTENTION_RESOLUTIONS}" \
+  --dropout ${DROPOUT} \
+  ${LEARN_SIGMA} \
+  ${CLASS_COND} \
+  --noise_schedule "${NOISE_SCHEDULE}" \
+  ${USE_SCALE_SHIFT_NORM} \
+  --diffusion_steps ${DIFFUSION_STEPS} \
+  --timestep_respacing "${TIMESTEP_RESPACING}" \
+  --use_real_cond \
+  --cond_datetime "${COND_DATETIME}" \
+  --lon_min ${LON_MIN} \
+  --lon_max ${LON_MAX} \
+  --lat_min ${LAT_MIN} \
+  --lat_max ${LAT_MAX} \
+  --save_best_samples \
+  --summary_file "${SUMMARY_FILE}" \
+  --diffusion_type vp_sde \
+  --beta_min 0.1 \
+  --beta_max 20.0 \
+  --sampling_eps 1e-3 \
+  --cfg_guidance_scale 1.0
+
+
+STATUS=$?
+
+# ----------------------------------------------------------
+# Status for current day
+# ----------------------------------------------------------
+
+echo "============================================================"
+
+if [ "${STATUS}" -eq 0 ]; then
+
+    echo "Evaluation completed successfully."
+
+else
+
+    echo "ERROR: Evaluation failed with status ${STATUS}."
+
+fi
+
+echo "Day            : ${DAY}"
+echo "Initialization : ${COND_DATETIME}"
+echo "Forecast lead  : +${FORECAST_LEAD_HOURS} h"
+echo "Output         : ${BASE_OUTPUT}"
+echo "============================================================"
+
+
+# ----------------------------------------------------------
+# Stop if current day failed
+# ----------------------------------------------------------
+
+if [ "${STATUS}" -ne 0 ]; then
+
+    exit ${STATUS}
+
+fi
+
+
+done
+
+
+# ==========================================================
+# All days completed
+# ==========================================================
+
+echo "============================================================"
+echo "ALL DAILY EVALUATIONS COMPLETED SUCCESSFULLY"
+echo "============================================================"
+echo "Month          : ${MONTHN}"
+echo "UTC            : ${SELECTED_HOUR}"
+echo "Days processed : 01-30"
+echo "Forecast lead  : +${FORECAST_LEAD_HOURS} h"
+echo "GPU            : ${CUDA_VISIBLE_DEVICES}"
+echo "============================================================"
+
+exit 0

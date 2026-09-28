@@ -1,0 +1,144 @@
+#!/bin/bash -l
+#-------------------------------
+#SBATCH --job-name=Training_SCORE_48H
+#SBATCH --output=Training_SCORE_48H_Pre.out
+#SBATCH --error=Training_SCORE_48H_Pre.out
+#SBATCH --qos=ng
+#SBATCH --nodes=1
+#SBATCH --mem=80GB
+#SBATCH --gpus=1
+#SBATCH --time=48:00:00
+###-------------------------------
+
+set -evx
+module load conda
+conda activate /perm/swe4281/conda/envs/torch-env
+
+PROJECT_ROOT="$(cd .. && pwd)"
+#
+INPUT_VARS=(
+  t2m
+  d2m
+  skt
+  slhf
+  sshf
+  u10
+  v10
+  e
+  tp
+  pev
+  sp
+  sro
+  ssr
+  ssro
+  lai_lv
+  lai_hv
+)
+
+TARGET_VARS=(
+  swvl1
+  swvl2
+  swvl3
+  swvl4
+  stl1
+  stl2
+  stl3
+  stl4
+)
+
+USE_SEASONAL=1
+SEASONAL_CHANNELS=12
+
+SEASONAL_FLAGS=""
+if [ "${USE_SEASONAL}" = "1" ]; then
+  SEASONAL_FLAGS="--add_seasonal_cond --seasonal_channels ${SEASONAL_CHANNELS}"
+fi
+
+# Forecast lead time
+FORECAST_LEAD_HOURS=24
+SDE_OBJ="epsilon"    #SDE_OBJ="score_snr" or "epsilon"
+RAIN_BEFORE="24hr"   # Options: "24hr" or "48hr"
+TYPE=${SDE_OBJ}_${RAIN_BEFORE}
+#
+cd ${PROJECT_ROOT}
+cd src_diffusion
+#-----------------------
+
+rm -f zarr_load.py
+
+if [[ "${RAIN_BEFORE}" == "24hr" ]]; then
+    ln -sf zarr_load_tp24h.py zarr_load.py
+
+elif [[ "${RAIN_BEFORE}" == "48hr" ]]; then
+    ln -sf zarr_load_tp48h.py zarr_load.py
+
+else
+    echo "ERROR: Invalid RAIN_BEFORE=${RAIN_BEFORE}"
+    echo "Valid options are: 24hr or 48hr"
+    exit 1
+fi
+
+echo "RAIN_BEFORE = ${RAIN_BEFORE}"
+echo "Using: $(readlink zarr_load.py)"
+#------------------
+rm -f diffusion_sde.py
+if [ "${SDE_OBJ}" = "epsilon" ]; then
+    ln -sf diffusion_sde_epsilon.py diffusion_sde.py
+elif [ "${SDE_OBJ}" = "score_snr" ]; then
+    ln -sf diffusion_sde_score_snr.py diffusion_sde.py
+else
+    echo "Unknown SDE_OBJ: ${SDE_OBJ}"
+    exit 1
+fi
+rm -rf __pycache__
+cd ..
+rm -rf __pycache__
+
+
+INPUT="/lus/h2resw01/scratch/swe4281/CERRA_DATA2026/ERA5EDA_DATA/SURF_METCOOP/ZARR/Metcoop_era5land2010_2015.zarr_1"
+OUTPUT="/ec/res4/hpcperm/swe4281/SoilData_SURFACE2026/SURF_MetCoOP/${TYPE}"
+rm -rf ${OUTPUT}
+mkdir -p ${OUTPUT}
+echo ${OUTPUT}
+
+echo "=========================================="
+echo "24-HOUR FORECAST TRAINING"
+echo "=========================================="
+echo "Input Zarr          : ${INPUT}"
+echo "Output directory    : ${OUTPUT}"
+echo "Forecast lead hours : ${FORECAST_LEAD_HOURS}"
+echo "Data size           : 256"
+echo "Physical inputs     : ${#INPUT_VARS[@]}"
+echo "Target variables    : ${#TARGET_VARS[@]}"
+echo "Seasonal channels   : ${SEASONAL_CHANNELS}"
+echo "=========================================="
+
+# Lowered batch + microbatch + enable fp16
+MODEL_FLAGS="--save_interval 2000 --image_size 256 --num_channels 64 --diffusion_type vp_sde --beta_min 0.1 --beta_max 20.0 --sampling_eps 1e-3 --cond_dropout_prob 0.1 --cfg_guidance_scale 1.0"
+
+if [ "${SDE_OBJ}" = "epsilon" ]; then
+    SDE_FLAGS="--sde_loss_type score_mse"
+elif [ "${SDE_OBJ}" = "score_snr" ]; then
+    SDE_FLAGS="--sde_loss_type snr_weighted"
+fi
+
+TOTALSTEP="--steps 70000"
+DIFFUSION_STEPS=4000
+TIMESTEP_RESPACING=""
+
+TRAIN_FLAGS="--lr 5e-5 --batch_size 4 --microbatch 2 --use_fp16 False"
+
+mkdir -p $OUTPUT
+
+# Launch
+python3 -u train_ml/Train_Main_zarr.py \
+  --data_dir $INPUT \
+  --TRAIN_OUT $OUTPUT \
+  --input_vars "${INPUT_VARS[@]}" \
+  --target_vars "${TARGET_VARS[@]}" \
+  ${SEASONAL_FLAGS} \
+  ${SDE_FLAGS} \
+  --forecast_lead_hours ${FORECAST_LEAD_HOURS} \
+  --diffusion_steps ${DIFFUSION_STEPS} \
+  --timestep_respacing "${TIMESTEP_RESPACING}" \
+  $MODEL_FLAGS $TOTALSTEP $TRAIN_FLAGS

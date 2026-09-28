@@ -1,0 +1,36 @@
+#!/bin/bash
+#-------------------------------
+#SBATCH --job-name=zarr_plot
+#SBATCH --output=zarrplot.out
+#SBATCH --error=zarrplot.out
+#SBATCH --nodes=1
+#SBATCH --mem=60GB
+#SBATCH --time=36:00:00
+#-------------------------------
+
+set -evx
+
+module load conda
+conda activate /perm/swe4281/conda/envs/torch-env
+
+zarrinput="/lus/h2resw01/scratch/swe4281/CERRA_DATA2026/ERA5EDA_DATA/SURF_METCOOP/ZARR/Metcoop_era5land2021_2024.zarr"
+outputdir="./ALL_PLOT_ZARR"
+
+mkdir -p "${outputdir}"
+
+latmin=54.0
+latmax=71.0
+lonmin=4.0
+lonmax=25.0
+
+python3 zarr_plot.py \
+    --zarr-path "${zarrinput}" \
+    --output-dir "${outputdir}" \
+    --start-date 2021-01-01 \
+    --end-date 2021-01-02 \
+    --lat-min "${latmin}" \
+    --lat-max "${latmax}" \
+    --lon-min "${lonmin}" \
+    --lon-max "${lonmax}"
+
+echo "Job completed successfully."
