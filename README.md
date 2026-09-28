@@ -36,14 +36,6 @@ ERA5LAND_VARIABLES = [
     "2m_temperature",
     "2m_dewpoint_temperature",
     "skin_temperature",
-    "soil_temperature_level_1",
-    "soil_temperature_level_2",
-    "soil_temperature_level_3",
-    "soil_temperature_level_4",
-    "volumetric_soil_water_layer_1",
-    "volumetric_soil_water_layer_2",
-    "volumetric_soil_water_layer_3",
-    "volumetric_soil_water_layer_4",
     "total_precipitation",
     "surface_net_solar_radiation",
     "surface_net_thermal_radiation",
@@ -72,8 +64,14 @@ The target dataset consists of high-resolution soil moisture and soil temperatur
 
 ```python
 TARGET_VARIABLES = [
-    "high_resolution_soil_moisture",
-    "high_resolution_soil_temperature"
+    "soil_temperature_level_1",
+    "soil_temperature_level_2",
+    "soil_temperature_level_3",
+    "soil_temperature_level_4",
+    "volumetric_soil_water_layer_1",
+    "volumetric_soil_water_layer_2",
+    "volumetric_soil_water_layer_3",
+    "volumetric_soil_water_layer_4",
 ]
 ```
 
